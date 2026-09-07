@@ -60,35 +60,56 @@ python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
 ./.venv/bin/python build_silver.py
 ```
 
-**33 secondes** : 31,2 Go de JSON → 2,9 Go de Parquet (facteur 11), soit
-967 Mo/s. Chaque worker écrit son propre fichier — aucune coordination,
-aucune fusion.
+**28 secondes** : 31,2 Go de JSON → 2,6 Go de Parquet (facteur 12,2), soit
+1 141 Mo/s.
+
+### Disposition
+
+Un dossier plat, une paire de fichiers par slice source :
 
 ```
 silver/
-  playlist/part-00..07.parquet      1 000 000 lignes    19 Mo
-  track/part-00..07.parquet        66 346 428 lignes  2 880 Mo
+  playlist.0-999.parquet          1 000 lignes
+  track.0-999.parquet            ~66 000 lignes
+  playlist.1000-1999.parquet
+  track.1000-1999.parquet
+  ...                             1 000 slices -> 2 000 fichiers
+                                  track 2 601 Mo | playlist 26 Mo
 ```
 
-Les deux tables se joignent sur `playlist_id`. La table `track` porte les
-attributs de la piste : le modèle est autosuffisant à deux tables.
+Le découpage 1:1 avec la source permet de rejouer une slice isolée sans
+retraiter les 31 Go. Les deux tables se joignent sur `playlist_id` ; `track`
+porte les attributs de la piste, le modèle est donc autosuffisant à deux tables.
 
 ### Lecture
 
-Un dossier de fichiers Parquet se lit comme une seule table :
+Un glob se lit comme une seule table :
 
 ```sql
 -- DuckDB
-SELECT artist_name, count(*) FROM 'silver/track/*.parquet'
+SELECT artist_name, count(*) FROM 'silver/track.*.parquet'
 GROUP BY 1 ORDER BY 2 DESC LIMIT 10;
 ```
 
 ```python
-import pyarrow.dataset as ds
-tr = ds.dataset("silver/track", format="parquet")
-tr.count_rows(filter=ds.field("artist_id") == "6vWDO969PvNqNYHIOW5v0m")   # 230 857 en 176 ms
+import glob, pyarrow.dataset as ds
+tr = ds.dataset(sorted(glob.glob("silver/track.*.parquet")))
+tr.count_rows(filter=ds.field("artist_id") == "6vWDO969PvNqNYHIOW5v0m")   # 230 857
 ```
 
-Le typage est explicite (aucune inférence) et repris du profilage de la source :
-`num_followers` en `int32` (max 71 643), `modified_at` en `date32` (l'epoch
-source est toujours aligné minuit UTC), `collaborative` en booléen.
+### Choix techniques
+
+- **zstd niveau 1** — mesuré 26 % plus compact que snappy pour une durée
+  identique. Le codec est vérifiable dans les métadonnées Parquet.
+- **Typage explicite**, aucune inférence, dimensionné d'après le profilage de
+  la source : `num_followers` en `int32` (max 71 643), `modified_at` en
+  `date32` (l'epoch source est toujours aligné minuit UTC, converti par une
+  simple division entière), `collaborative` en booléen.
+- **Une slice par tâche**, réparties dynamiquement sur 8 workers : meilleur
+  équilibrage que des blocs fixes, et mémoire naturellement bornée.
+
+Compromis assumé de la disposition par fichier : un scan filtré sur les 66 M
+de lignes prend 425 ms, contre 176 ms si tout était regroupé en 8 fichiers —
+1 000 ouvertures de fichiers et lectures de pied de page au lieu de 8. En
+échange, la construction est plus rapide, les fichiers plus compacts, et une
+slice se rejoue seule.
