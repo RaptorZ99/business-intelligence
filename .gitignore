@@ -1,0 +1,13 @@
+# Le dataset source : 31 Go, non versionnable
+/data/
+
+# Artefacts macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Sorties intermediaires d'analyse
+*.pkl
+*.log
