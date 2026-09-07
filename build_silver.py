@@ -22,20 +22,20 @@ retraiter les 31 Go. Un glob se lit comme une seule table :
 Usage :  python3 build_silver.py [nb_slices_max]
          MPD_DATA=/chemin/vers/data python3 build_silver.py
 """
-import json
 import os
 import shutil
 import sys
 import time
 from multiprocessing import Pool
 
+import orjson
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.environ.get("MPD_DATA") or os.path.join(HERE, "data")
 OUT = os.path.join(HERE, "silver")
-NWORKERS = 8
+NWORKERS = os.cpu_count() or 8   # mesure : 12 workers > 11 > 8 sur cette machine
 # zstd niveau 1 : mesure 26 % plus compact que snappy pour une duree identique.
 CODEC = dict(compression="zstd", compression_level=1)
 
@@ -82,7 +82,7 @@ def build(path):
     P = [[] for _ in PLAYLIST]
     T = [[] for _ in TRACK]
 
-    for pl in json.loads(open(path, "rb").read())["playlists"]:
+    for pl in orjson.loads(open(path, "rb").read())["playlists"]:
         pid = pl["pid"]
         P[0].append(pid)
         P[1].append(pl["name"])

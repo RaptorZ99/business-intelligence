@@ -60,8 +60,8 @@ python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
 ./.venv/bin/python build_silver.py
 ```
 
-**28 secondes** : 31,2 Go de JSON → 2,6 Go de Parquet (facteur 12,2), soit
-1 141 Mo/s.
+**20 secondes** : 31,2 Go de JSON → 2,6 Go de Parquet (facteur 12,2), soit
+1 580 Mo/s.
 
 ### Disposition
 
@@ -105,8 +105,13 @@ tr.count_rows(filter=ds.field("artist_id") == "6vWDO969PvNqNYHIOW5v0m")   # 230 
   la source : `num_followers` en `int32` (max 71 643), `modified_at` en
   `date32` (l'epoch source est toujours aligné minuit UTC, converti par une
   simple division entière), `collaborative` en booléen.
-- **Une slice par tâche**, réparties dynamiquement sur 8 workers : meilleur
-  équilibrage que des blocs fixes, et mémoire naturellement bornée.
+- **`orjson`** au lieu du module `json` : mesuré 16 % plus rapide sur
+  l'ensemble du traitement (26,3 s → 22,0 s à nombre de workers égal).
+- **Une slice par tâche**, réparties dynamiquement sur `os.cpu_count()`
+  workers : meilleur équilibrage que des blocs fixes, mémoire bornée.
+- **Aucune erreur avalée** : une slice illisible fait échouer le script avec
+  un code de sortie non nul, plutôt que de produire un jeu incomplet en
+  annonçant un succès.
 
 Compromis assumé de la disposition par fichier : un scan filtré sur les 66 M
 de lignes prend 425 ms, contre 176 ms si tout était regroupé en 8 fichiers —
