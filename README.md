@@ -10,6 +10,7 @@ Entrepôt de données PostgreSQL construit sur le **Spotify Million Playlist Dat
 | [`warehouse/`](warehouse/) | Le pipeline complet — schéma, chargement, transformation, index, recette |
 | [`warehouse/README.md`](warehouse/README.md) | Documentation détaillée : modèle, pièges de la source, choix de performance |
 | [`warehouse/mpd.dbml`](warehouse/mpd.dbml) | Diagramme du modèle, à ouvrir dans [dbdiagram.io](https://dbdiagram.io) |
+| [`build_silver.py`](build_silver.py) | Export Parquet en 33 s — deux tables, sans serveur |
 
 ## Volumétrie
 
@@ -46,3 +47,48 @@ Environ **8 minutes** de bout en bout (12 cœurs, 16 Go de RAM, PostgreSQL 16).
 | Recherche de sous-chaîne sur 2,26 M titres | 34 ms |
 | Recherche d'artiste insensible aux accents | 2 ms |
 | Top 3 des co-artistes (2 passes sur 66 M) | 2,7 s |
+
+---
+
+## Couche silver — Parquet, sans serveur
+
+Deux tables Parquet générées directement depuis le JSON, pour travailler sans
+base de données.
+
+```bash
+python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
+./.venv/bin/python build_silver.py
+```
+
+**33 secondes** : 31,2 Go de JSON → 2,9 Go de Parquet (facteur 11), soit
+967 Mo/s. Chaque worker écrit son propre fichier — aucune coordination,
+aucune fusion.
+
+```
+silver/
+  playlist/part-00..07.parquet      1 000 000 lignes    19 Mo
+  track/part-00..07.parquet        66 346 428 lignes  2 880 Mo
+```
+
+Les deux tables se joignent sur `playlist_id`. La table `track` porte les
+attributs de la piste : le modèle est autosuffisant à deux tables.
+
+### Lecture
+
+Un dossier de fichiers Parquet se lit comme une seule table :
+
+```sql
+-- DuckDB
+SELECT artist_name, count(*) FROM 'silver/track/*.parquet'
+GROUP BY 1 ORDER BY 2 DESC LIMIT 10;
+```
+
+```python
+import pyarrow.dataset as ds
+tr = ds.dataset("silver/track", format="parquet")
+tr.count_rows(filter=ds.field("artist_id") == "6vWDO969PvNqNYHIOW5v0m")   # 230 857 en 176 ms
+```
+
+Le typage est explicite (aucune inférence) et repris du profilage de la source :
+`num_followers` en `int32` (max 71 643), `modified_at` en `date32` (l'epoch
+source est toujours aligné minuit UTC), `collaborative` en booléen.

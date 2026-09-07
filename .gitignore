@@ -11,3 +11,9 @@ __pycache__/
 # Sorties intermediaires d'analyse
 *.pkl
 *.log
+
+# Sorties Parquet (regenerables en 33 s)
+/silver/
+
+# Environnement virtuel
+.venv/
