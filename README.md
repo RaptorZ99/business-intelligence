@@ -1,69 +1,34 @@
 # Business Intelligence & Analytics — M2 EFREI
 
-Entrepôt de données PostgreSQL construit sur le **Spotify Million Playlist Dataset**
-(31,2 Go de JSON, 1 000 slices).
+Le **Spotify Million Playlist Dataset** (31,2 Go de JSON, 1 000 slices) converti
+en Parquet : deux tables, sans serveur, en **20 secondes**.
 
-## Contenu
-
-| | |
-|---|---|
-| [`warehouse/`](warehouse/) | Le pipeline complet — schéma, chargement, transformation, index, recette |
-| [`warehouse/README.md`](warehouse/README.md) | Documentation détaillée : modèle, pièges de la source, choix de performance |
-| [`warehouse/mpd.dbml`](warehouse/mpd.dbml) | Diagramme du modèle, à ouvrir dans [dbdiagram.io](https://dbdiagram.io) |
-| [`build_silver.py`](build_silver.py) | Export Parquet en 33 s — deux tables, sans serveur |
-
-## Volumétrie
-
-| Table | Lignes | Taille |
-|---|---:|---:|
-| `fact_playlist_track` | 66 346 428 | 6,7 Go |
-| `dim_track` | 2 262 292 | 606 Mo |
-| `dim_album` | 734 684 | 156 Mo |
-| `dim_artist` | 295 860 | 66 Mo |
-| `dim_playlist` | 1 000 000 | 168 Mo |
-
-## Construction
-
-Le dataset source n'est pas versionné (31 Go). Placez les fichiers
-`mpd.slice.*.json` dans un dossier `data/` à la racine, puis :
-
-```bash
-createdb -E UTF8 -T template0 --locale=en_US.UTF-8 mpd
-psql -v ON_ERROR_STOP=1 -d mpd -f warehouse/01_schema.sql
-python3 warehouse/02_load.py                                  #  34 s
-psql -v ON_ERROR_STOP=1 -d mpd -f warehouse/03_transform.sql  # 3 min 51
-psql -v ON_ERROR_STOP=1 -d mpd -f warehouse/04_index.sql      # 3 min 36
-psql -d mpd -f warehouse/05_validate.sql                      # recette : 20/20
+```
+bronze/   31,2 Go   1 000 fichiers JSON bruts, non versionnés
+   |
+   |  build_silver.py        20,2 s
+   v
+silver/    2,6 Go   2 000 fichiers Parquet, deux tables
 ```
 
-Environ **8 minutes** de bout en bout (12 cœurs, 16 Go de RAM, PostgreSQL 16).
-
-## Performances
-
-| Requête | Entrepôt |
-|---|---:|
-| Occurrences d'un artiste sur 66 M lignes | 19 ms |
-| Top 10 artistes | 1,5 ms |
-| Recherche de sous-chaîne sur 2,26 M titres | 34 ms |
-| Recherche d'artiste insensible aux accents | 2 ms |
-| Top 3 des co-artistes (2 passes sur 66 M) | 2,7 s |
-
----
-
-## Couche silver — Parquet, sans serveur
-
-Deux tables Parquet générées directement depuis le JSON, pour travailler sans
-base de données.
+## Utilisation
 
 ```bash
 python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
 ./.venv/bin/python build_silver.py
 ```
 
-**20 secondes** : 31,2 Go de JSON → 2,6 Go de Parquet (facteur 12,2), soit
-1 580 Mo/s.
+Le dataset source n'est pas versionné. Placez les fichiers `mpd.slice.*.json`
+dans `bronze/` à la racine, ou pointez `MPD_BRONZE` ailleurs.
 
-### Disposition
+| | |
+|---|---:|
+| Durée | **20,2 s** (1 580 Mo/s) |
+| Entrée | 31,2 Go de JSON |
+| Sortie | 2 627 Mo de Parquet — facteur **×12,2** |
+| Lignes | 1 000 000 playlists · 66 346 428 pistes |
+
+## Disposition
 
 Un dossier plat, une paire de fichiers par slice source :
 
@@ -78,17 +43,45 @@ silver/
 ```
 
 Le découpage 1:1 avec la source permet de rejouer une slice isolée sans
-retraiter les 31 Go. Les deux tables se joignent sur `playlist_id` ; `track`
-porte les attributs de la piste, le modèle est donc autosuffisant à deux tables.
+retraiter les 31 Go.
 
-### Lecture
+## Modèle
+
+Deux tables, jointes sur `playlist_id`. La table `track` porte les attributs de
+la piste : le modèle est autosuffisant, sans dimension séparée.
+
+**`track`** — une ligne par piste dans une playlist
+
+| Colonne | Type |
+|---|---|
+| `playlist_id` | `int32` |
+| `pos` | `int16` |
+| `track_id` `artist_id` `album_id` | `string` — base62 Spotify, 22 caractères |
+| `track_name` `artist_name` `album_name` | `string` |
+| `duration_ms` | `int32` |
+
+**`playlist`** — une ligne par playlist
+
+| Colonne | Type |
+|---|---|
+| `playlist_id` | `int32` |
+| `name` | `string` |
+| `description` | `string` — `null` quand le champ est absent |
+| `collaborative` | `bool` |
+| `modified_at` | `date32` |
+| `num_tracks` `num_albums` `num_artists` `num_edits` | `int16` |
+| `num_followers` | `int32` |
+| `duration_ms` | `int64` |
+
+## Lecture
 
 Un glob se lit comme une seule table :
 
 ```sql
 -- DuckDB
-SELECT artist_name, count(*) FROM 'silver/track.*.parquet'
-GROUP BY 1 ORDER BY 2 DESC LIMIT 10;
+SELECT artist_name, count(*) AS n
+FROM 'silver/track.*.parquet'
+GROUP BY 1 ORDER BY n DESC LIMIT 10;
 ```
 
 ```python
@@ -97,24 +90,40 @@ tr = ds.dataset(sorted(glob.glob("silver/track.*.parquet")))
 tr.count_rows(filter=ds.field("artist_id") == "6vWDO969PvNqNYHIOW5v0m")   # 230 857
 ```
 
-### Choix techniques
+## Choix techniques
 
-- **zstd niveau 1** — mesuré 26 % plus compact que snappy pour une durée
-  identique. Le codec est vérifiable dans les métadonnées Parquet.
-- **Typage explicite**, aucune inférence, dimensionné d'après le profilage de
-  la source : `num_followers` en `int32` (max 71 643), `modified_at` en
-  `date32` (l'epoch source est toujours aligné minuit UTC, converti par une
-  simple division entière), `collaborative` en booléen.
 - **`orjson`** au lieu du module `json` : mesuré 16 % plus rapide sur
   l'ensemble du traitement (26,3 s → 22,0 s à nombre de workers égal).
+- **zstd niveau 1** : mesuré 26 % plus compact que snappy pour une durée
+  identique.
 - **Une slice par tâche**, réparties dynamiquement sur `os.cpu_count()`
   workers : meilleur équilibrage que des blocs fixes, mémoire bornée.
-- **Aucune erreur avalée** : une slice illisible fait échouer le script avec
-  un code de sortie non nul, plutôt que de produire un jeu incomplet en
-  annonçant un succès.
+- **Aucune erreur avalée** : une slice illisible fait échouer le script avec un
+  code de sortie non nul, plutôt que de produire un jeu incomplet en annonçant
+  un succès.
+- **Typage explicite**, aucune inférence.
 
-Compromis assumé de la disposition par fichier : un scan filtré sur les 66 M
-de lignes prend 425 ms, contre 176 ms si tout était regroupé en 8 fichiers —
-1 000 ouvertures de fichiers et lectures de pied de page au lieu de 8. En
-échange, la construction est plus rapide, les fichiers plus compacts, et une
-slice se rejoue seule.
+## Le typage vient de mesures, pas d'hypothèses
+
+Les 66 346 428 lignes sources ont été profilées avant d'écrire le moindre
+schéma. Ce que ça a changé :
+
+| Constat sur la source | Conséquence |
+|---|---|
+| `num_followers` monte à **71 643** | `int32` — un `int16` (32 767) déborderait |
+| `modified_at` est un epoch **toujours aligné minuit UTC** | `date32`, pas un timestamp : aucune information horaire à la source |
+| `collaborative` est une **chaîne** `"true"` / `"false"` | converti en `bool` |
+| `description` **absente** (981 240) ≠ description vide | `null` pour l'absence, valeur brute sinon |
+| Une piste a `duration_ms = **-1**` | valeur conservée, pas de contrainte de positivité |
+| `num_tracks` monte à **376** | au-delà de la limite de 250 annoncée par la doc du MPD |
+
+## Pièges à connaître pour interroger ces données
+
+| | |
+|---|---|
+| **5 991 noms d'artiste sont des homonymes** — six artistes distincts s'appellent « Drake » | agréger sur `artist_id`, **jamais** sur le nom |
+| **881 652 pistes apparaissent plusieurs fois dans une même playlist** | `(playlist_id, track_id)` n'est pas unique ; la clé est `(playlist_id, pos)` |
+| **38 235 albums portent des pistes de plusieurs artistes** (compilations) | un album n'appartient pas à un artiste |
+| **1 086 pistes durent 0 ms**, une vaut −1 | filtrer `duration_ms > 0` pour tout calcul de durée |
+| **28 618 noms contiennent des emoji hors BMP**, ~4 800 des contrôles C1 (mojibake Windows-1252) | désaccentuer et normaliser avant toute recherche par nom |
+| Un artiste se nomme **littéralement `\N`** | ne jamais utiliser de sentinelle textuelle dans un export |

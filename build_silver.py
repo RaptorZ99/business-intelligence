@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Couche silver : le Million Playlist Dataset (31 Go de JSON) en Parquet.
+Couche silver : bronze/ (31 Go de JSON brut) -> silver/ (Parquet).
 
 Un dossier plat, une paire de fichiers par slice source :
 
@@ -20,7 +20,7 @@ retraiter les 31 Go. Un glob se lit comme une seule table :
     ds.dataset(glob.glob('silver/track.*.parquet')) -- pyarrow
 
 Usage :  python3 build_silver.py [nb_slices_max]
-         MPD_DATA=/chemin/vers/data python3 build_silver.py
+         MPD_BRONZE=/chemin/vers/bronze python3 build_silver.py
 """
 import os
 import shutil
@@ -33,7 +33,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.environ.get("MPD_DATA") or os.path.join(HERE, "data")
+SRC = os.environ.get("MPD_BRONZE") or os.path.join(HERE, "bronze")
 OUT = os.path.join(HERE, "silver")
 NWORKERS = os.cpu_count() or 8   # mesure : 12 workers > 11 > 8 sur cette machine
 # zstd niveau 1 : mesure 26 % plus compact que snappy pour une duree identique.
