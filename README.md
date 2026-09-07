@@ -9,6 +9,10 @@ bronze/   31,2 Go   1 000 fichiers JSON bruts, non versionnés
    |  build_silver.py        20,2 s
    v
 silver/    2,6 Go   2 000 fichiers Parquet, deux tables
+   |
+   |  setup_duckdb.py        vues DuckDB, aucune copie
+   v
+gold.duckdb                  à venir
 ```
 
 ## Utilisation
@@ -73,16 +77,31 @@ la piste : le modèle est autosuffisant, sans dimension séparée.
 | `num_followers` | `int32` |
 | `duration_ms` | `int64` |
 
-## Lecture
+## DuckDB
 
-Un glob se lit comme une seule table :
-
-```sql
--- DuckDB
-SELECT artist_name, count(*) AS n
-FROM 'silver/track.*.parquet'
-GROUP BY 1 ORDER BY n DESC LIMIT 10;
+```bash
+brew install duckdb                       # la CLI (optionnelle)
+./.venv/bin/python setup_duckdb.py        # crée gold.duckdb
 ```
+
+Crée `gold.duckdb` avec deux **vues** — `playlist` et `track` — sur les Parquet.
+Aucune donnée n'est copiée : un rebuild de `silver/` est visible immédiatement.
+Les chemins sont absolus, les requêtes marchent depuis n'importe quel
+répertoire ; relancer le script après un déplacement du projet.
+
+```bash
+duckdb gold.duckdb -c "SELECT artist_name, count(*) n FROM track GROUP BY 1 ORDER BY n DESC LIMIT 10"
+```
+
+```python
+import duckdb
+con = duckdb.connect("gold.duckdb")
+con.sql("SELECT count(*) FROM track WHERE artist_id = '6vWDO969PvNqNYHIOW5v0m'")   # 230 857
+```
+
+Un agrégat sur les 66 M de lignes sort en **244 ms**.
+
+### Lecture sans DuckDB
 
 ```python
 import glob, pyarrow.dataset as ds

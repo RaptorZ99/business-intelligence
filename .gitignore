@@ -17,3 +17,7 @@ __pycache__/
 
 # Environnement virtuel
 .venv/
+
+# Base DuckDB : ne contient que des vues, regenerable par setup_duckdb.py
+*.duckdb
+*.duckdb.wal
